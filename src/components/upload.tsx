@@ -358,6 +358,8 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
         })
         .catch((err) => {
           toast.error(err.message);
+          actions.setFileUploadStatus(currentFile.id, FileUploadStatus.FAILED);
+          actions.startNextUpload();
         });
     }
   }, [currentFile?.id]);
