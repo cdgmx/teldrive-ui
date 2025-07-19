@@ -76,11 +76,15 @@ export const useFileUploadStore = create<UploadState>()(
 
       setProgress: (id: string, progress: number) =>
         set((state) => {
-          state.fileMap[id].progress = progress;
+          if (state.fileMap[id]) {
+            state.fileMap[id].progress = progress;
+          }
         }),
       setFileUploadStatus: (id: string, status: FileUploadStatus) =>
         set((state) => {
-          state.fileMap[id].status = status;
+          if (state.fileMap[id]) {
+            state.fileMap[id].status = status;
+          }
         }),
 
       setCurrentFileId: (id: string) =>

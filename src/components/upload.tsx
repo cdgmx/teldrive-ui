@@ -169,38 +169,43 @@ const uploadFile = async (
     onProgress(totalProgress / totalParts);
   }, 1000);
 
-  signal.addEventListener("abort", () => {
+  const cleanup = () => {
     limit.clearQueue();
     clearInterval(timer);
-  });
+  };
 
-  const parts = await Promise.all(partUploadPromises);
+  signal.addEventListener("abort", cleanup);
 
-  const uploadParts = uploadedParts
-    .concat(parts)
-    .sort((a, b) => a.partNo - b.partNo)
-    .map((item) => ({ id: item.partId, salt: item.salt }));
+  try {
+    const parts = await Promise.all(partUploadPromises);
 
-  const payload = {
-    name: fileName,
-    mimeType: file.type ?? "application/octet-stream",
-    type: "file",
-    parts: uploadParts,
-    size: file.size,
-    path: path ? path : "/",
-    encrypted: encyptFile,
-    channelId,
-  } as const;
+    const uploadParts = uploadedParts
+      .concat(parts)
+      .sort((a, b) => a.partNo - b.partNo)
+      .map((item) => ({ id: item.partId, salt: item.salt }));
 
-  await onCreate(payload);
-  await fetchClient.DELETE("/uploads/{id}", {
-    params: {
-      path: {
-        id: uploadId,
+    const payload = {
+      name: fileName,
+      mimeType: file.type ?? "application/octet-stream",
+      type: "file",
+      parts: uploadParts,
+      size: file.size,
+      path: path ? path : "/",
+      encrypted: encyptFile,
+      channelId,
+    } as const;
+
+    await onCreate(payload);
+    await fetchClient.DELETE("/uploads/{id}", {
+      params: {
+        path: {
+          id: uploadId,
+        },
       },
-    },
-  });
-  clearInterval(timer);
+    });
+  } finally {
+    cleanup();
+  }
 };
 
 const UploadFileEntry = memo(({ id }: { id: string }) => {
