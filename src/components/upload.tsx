@@ -15,6 +15,7 @@ import md5 from "md5";
 import pLimit from "p-limit";
 import toast from "react-hot-toast";
 import { useShallow } from "zustand/react/shallow";
+import { FixedSizeList } from "react-window";
 
 import useSettings from "@/hooks/use-settings";
 import { scrollbarClasses } from "@/utils/classes";
@@ -164,14 +165,36 @@ const uploadFile = async (
     );
   }
 
+  let animationFrameId: number | null = null;
+  let lastUpdateTimestamp = Date.now();
+
+  const requestProgressUpdate = (onProgress: (progress: number) => void, getProgress: () => number) => {
+    if (Date.now() - lastUpdateTimestamp < 1000) {
+      return;
+    }
+
+    if (!animationFrameId) {
+      animationFrameId = requestAnimationFrame(() => {
+        onProgress(getProgress());
+        lastUpdateTimestamp = Date.now();
+        animationFrameId = null;
+      });
+    }
+  };
+
   const timer = setInterval(() => {
-    const totalProgress = partProgress.reduce((sum, progress) => sum + progress, 0);
-    onProgress(totalProgress / totalParts);
+    requestProgressUpdate(onProgress, () => {
+      const totalProgress = partProgress.reduce((sum, progress) => sum + progress, 0);
+      return totalProgress / totalParts;
+    });
   }, 1000);
 
   const cleanup = () => {
     limit.clearQueue();
     clearInterval(timer);
+    if (animationFrameId) {
+      cancelAnimationFrame(animationFrameId);
+    }
   };
 
   signal.addEventListener("abort", cleanup);
@@ -209,8 +232,14 @@ const uploadFile = async (
 };
 
 const UploadFileEntry = memo(({ id }: { id: string }) => {
-  const { status, progress, file } = useFileUploadStore((state) => state.fileMap[id]);
+  const fileData = useFileUploadStore((state) => state.fileMap[id]);
   const removeFile = useFileUploadStore((state) => state.actions.removeFile);
+  
+  if (!fileData || !fileData.file) {
+    return null;
+  }
+  
+  const { status, progress, file } = fileData;
   const { name, size } = file;
 
   const { icon, colorCode } = useIconData({ name, isDir: false, id: "" });
@@ -288,15 +317,31 @@ const UploadFileEntry = memo(({ id }: { id: string }) => {
 });
 
 export const Upload = ({ queryKey }: { queryKey: any[] }) => {
-  const { fileIds, currentFile, collapse, fileDialogOpen, actions } = useFileUploadStore(
+  const { fileIds, currentFileId, collapse, fileDialogOpen, uploadOpen, actions } = useFileUploadStore(
     useShallow((state) => ({
       fileIds: state.filesIds,
-      fileMap: state.fileMap,
-      currentFile: state.fileMap[state.currentFileId],
+      currentFileId: state.currentFileId,
       collapse: state.collapse,
       actions: state.actions,
       fileDialogOpen: state.fileDialogOpen,
+      uploadOpen: state.uploadOpen,
     })),
+  );
+
+  const currentFile = useFileUploadStore((state) => state.fileMap[currentFileId]);
+  
+  const uploadStats = useFileUploadStore(
+    useShallow((state) => {
+      const validFiles = state.filesIds.filter(id => state.fileMap[id]);
+      return {
+        total: state.filesIds.length,
+        completed: validFiles.filter(
+          (id) => state.fileMap[id]?.status === FileUploadStatus.UPLOADED,
+        ).length,
+        failed: validFiles.filter((id) => state.fileMap[id]?.status === FileUploadStatus.FAILED)
+          .length,
+      };
+    }),
   );
 
   const { settings } = useSettings();
@@ -306,11 +351,18 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const openFileSelector = useCallback(() => {
-    fileInputRef?.current?.click();
-    window.addEventListener("focus", () => actions.setFileDialogOpen(false), {
-      once: true,
-    });
-  }, []);
+    if (fileInputRef?.current) {
+      fileInputRef.current.click();
+      // Use setTimeout to ensure the focus event handler is added after the current execution
+      setTimeout(() => {
+        const handleFocus = () => {
+          actions.setFileDialogOpen(false);
+          window.removeEventListener("focus", handleFocus);
+        };
+        window.addEventListener("focus", handleFocus, { once: true });
+      }, 0);
+    }
+  }, [actions]);
 
   useEffect(() => {
     if (fileDialogOpen) {
@@ -325,7 +377,7 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
     if (files.length > 0) {
       actions.addFiles(files);
     }
-  }, []);
+  }, [actions]);
 
   const queryClient = useQueryClient();
 
@@ -352,9 +404,6 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
           await creatFile.mutateAsync({
             body: payload,
           });
-          if (creatFile.isSuccess) {
-            actions.setFileUploadStatus(currentFile.id, FileUploadStatus.UPLOADED);
-          }
         },
       )
         .then(() => {
@@ -367,7 +416,7 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
           actions.startNextUpload();
         });
     }
-  }, [currentFile?.id]);
+  }, [currentFile?.id, currentFile?.status, path, settings.splitFileSize, settings.uploadConcurrency, settings.encryptFiles, session?.userId, actions, creatFile]);
 
   return (
     <div className="fixed right-10 bottom-10">
@@ -382,54 +431,97 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
         <div className="max-w-xs">
           <div
             className={clsx(
-              "shadow-md w-full flex items-center gap-2",
+              "shadow-md w-full flex flex-col gap-2",
               "px-4 py-2 text-sm font-medium bg-surface-container min-h-12",
               collapse ? "rounded-lg" : "rounded-t-lg",
             )}
           >
-            <span>Upload</span>
-            <span className="text-label-medium">
-              {fileIds.length} {fileIds.length > 1 ? "files" : "file"}
-            </span>
-            <div className="inline-flex gap-2 ml-auto">
-              <Button
-                variant="text"
-                className="text-inherit"
-                isIconOnly
-                onPress={actions.toggleCollapse}
-              >
-                {collapse ? <IconParkOutlineUpC /> : <IconParkOutlineDownC />}
-              </Button>
-              <Button
-                variant="text"
-                className="text-inherit"
-                isIconOnly
-                onPress={actions.cancelUpload}
-              >
-                <IconParkOutlineCloseOne />
-              </Button>
+            <div className="flex items-center">
+              <span>Upload</span>
+              <span className="text-label-medium ml-2">
+                {fileIds.length} {fileIds.length > 1 ? "files" : "file"}
+              </span>
+              <div className="inline-flex gap-2 ml-auto">
+                <Button
+                  variant="text"
+                  className="text-inherit"
+                  isIconOnly
+                  onPress={actions.toggleCollapse}
+                >
+                  {collapse ? <IconParkOutlineUpC /> : <IconParkOutlineDownC />}
+                </Button>
+                <Button
+                  variant="text"
+                  className="text-inherit"
+                  isIconOnly
+                  onPress={actions.cancelUpload}
+                >
+                  <IconParkOutlineCloseOne />
+                </Button>
+              </div>
+            </div>
+            <div className="p-2 border-b border-outline-variant">
+              <div className="flex justify-between mb-1 text-label-medium">
+                <span>
+                  Completed: {uploadStats.completed}/{uploadStats.total}
+                </span>
+                {uploadStats.failed > 0 && <span>Failed: {uploadStats.failed}</span>}
+              </div>
+              <div className="h-1 bg-surface-container-highest rounded">
+                <div
+                  className="h-full bg-primary rounded"
+                  style={{
+                    width: `${uploadStats.total > 0 ? (uploadStats.completed / uploadStats.total) * 100 : 0}%`,
+                    transition: "width 300ms ease-in",
+                  }}
+                />
+              </div>
             </div>
           </div>
-          <Listbox
-            aria-label="Upload Files"
-            isVirtualized={fileIds.length > 100}
+          <div
             className={clsx(
               "max-w-xs rounded-none rounded-b-lg dark:bg-surface-container-lowest bg-surface shadow-md",
               "transition-[max-height] duration-300 ease-in-out select-none",
-              scrollbarClasses,
               collapse ? "max-h-0 overflow-hidden" : "max-h-80 overflow-y-auto",
             )}
           >
-            {fileIds.map((id, _) => (
-              <ListboxItem
-                className="data-[hover=true]:bg-transparent px-0"
-                key={id}
-                textValue={id}
+            {fileIds.length > 100 ? (
+              <FixedSizeList
+                height={collapse ? 0 : 320}
+                itemCount={fileIds.length}
+                itemSize={64}
+                width={320}
+                overscanCount={5}
+                className={scrollbarClasses}
               >
-                <UploadFileEntry id={id} />
-              </ListboxItem>
-            ))}
-          </Listbox>
+                {({ index, style }) => {
+                  const id = fileIds[index];
+                  if (!id) return null;
+                  
+                  return (
+                    <div style={style} className="px-4 py-2">
+                      <UploadFileEntry id={id} />
+                    </div>
+                  );
+                }}
+              </FixedSizeList>
+            ) : (
+              <Listbox
+                aria-label="Upload Files"
+                className={clsx(scrollbarClasses, "max-h-80 overflow-y-auto")}
+              >
+                {fileIds.filter(Boolean).map((id) => (
+                  <ListboxItem
+                    className="data-[hover=true]:bg-transparent px-0"
+                    key={id}
+                    textValue={id}
+                  >
+                    <UploadFileEntry id={id} />
+                  </ListboxItem>
+                ))}
+              </Listbox>
+            )}
+          </div>
         </div>
       )}
     </div>

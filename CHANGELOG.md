@@ -12,6 +12,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### [2025-07-20 Current] [PERFORMANCE] Implemented upload component virtualization and optimization
+- **What**: Added `react-window` for virtual scrolling, optimized Zustand selectors, and implemented threshold-based progress updates
+- **Why**: Upload component exhibited significant performance degradation with large file volumes (1000+ files)
+- **Impact**: Dramatically improved rendering performance, reduced memory usage, and eliminated UI lag during bulk uploads
+
+### [2025-07-20 Current] [BUGFIX] Fixed "Cannot read properties of undefined (reading 'contains')" error
+- **What**: Added comprehensive null safety checks in `UploadFileEntry` component and list rendering
+- **Why**: Component tried to access file data before it was properly initialized in state
+- **Impact**: Upload dialog now opens without runtime errors, preventing crashes when clicking upload button
+
+### [2025-07-20 Current] [PERFORMANCE] Optimized file addition and state management
+- **What**: Restructured `addFiles` action to ensure atomic updates and prevent race conditions
+- **Why**: File IDs were being added to arrays before corresponding file objects were stored in map
+- **Impact**: Eliminated undefined file data access and improved state consistency during file operations
+
+### [2025-07-20 Current] [PERFORMANCE] Added upload progress summary with optimized calculations
+- **What**: Implemented upload summary component with safe division and filtered file validation
+- **Why**: Progress calculations failed with undefined files and division by zero scenarios
+- **Impact**: Reliable progress tracking and summary display even with incomplete file data
+
+### [2025-07-20 Current] [PERFORMANCE] Enhanced focus management and file input handling
+- **What**: Improved `openFileSelector` with safer event handling and proper cleanup
+- **Why**: Focus event listeners were causing DOM manipulation errors
+- **Impact**: File selection dialog opens reliably without focus-related runtime errors
+
 ### [2025-07-20 Current] [BUGFIX] Fixed upload progress error loop
 - **What**: Added safety checks in `setProgress` and `setFileUploadStatus` functions
 - **Why**: Prevented "Cannot set properties of undefined" errors when files are removed during upload

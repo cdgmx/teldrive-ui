@@ -59,16 +59,21 @@ export const useFileUploadStore = create<UploadState>()(
             progress: 0,
           }));
 
-          const ids = newFiles.map((file) => {
+          // First add all files to the map
+          newFiles.forEach((file) => {
             state.fileMap[file.id] = file;
-            return file.id;
           });
+
+          // Then add IDs to the array
+          const ids = newFiles.map((file) => file.id);
           state.filesIds.push(...ids);
-          if (!state.currentFileId) {
+          
+          // Set current file ID if none is set
+          if (!state.currentFileId && ids.length > 0) {
             state.currentFileId = ids[0];
-          } else {
+          } else if (state.currentFileId && state.fileMap[state.currentFileId]) {
             const currentFile = state.fileMap[state.currentFileId];
-            if (currentFile.status === FileUploadStatus.UPLOADED) {
+            if (currentFile.status === FileUploadStatus.UPLOADED && ids.length > 0) {
               state.currentFileId = ids[0];
             }
           }
@@ -77,7 +82,9 @@ export const useFileUploadStore = create<UploadState>()(
       setProgress: (id: string, progress: number) =>
         set((state) => {
           if (state.fileMap[id]) {
-            state.fileMap[id].progress = progress;
+            if (Math.abs(state.fileMap[id].progress - progress) >= 1 || progress === 100) {
+              state.fileMap[id].progress = progress;
+            }
           }
         }),
       setFileUploadStatus: (id: string, status: FileUploadStatus) =>
