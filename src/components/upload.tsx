@@ -23,11 +23,9 @@ import { filesize, formatTime, zeroPad } from "@/utils/common";
 import { $api, fetchClient } from "@/utils/api";
 import { useSession } from "@/utils/query-options";
 import { FileUploadStatus, useFileUploadStore } from "@/utils/stores";
+import { optimizedBatchFileCheck, fileExistenceCache } from "@/utils/upload-helpers";
 import type { components } from "@/lib/api";
 import { useSearch } from "@tanstack/react-router";
-
-// Cache for file existence checks to prevent race conditions
-const fileExistenceCache = new Map<string, { exists: boolean; timestamp: number }>();
 
 type UploadParams = Record<string, string | number | boolean | undefined>;
 
@@ -85,12 +83,11 @@ const uploadFile = async (
 ) => {
   const fileName = file.name;
 
-  // Cache for file existence to avoid race conditions
-  const cacheKey = `${path}/${fileName}`;
-  const existingFileCheck = fileExistenceCache.get(cacheKey);
+  // Check cache first for recent existence check
+  const existingFileCheck = fileExistenceCache.get(path, fileName);
   
-  // Only check if not recently checked
-  if (!existingFileCheck || Date.now() - existingFileCheck.timestamp > 30000) { // 30 second cache
+  // Only do network check if not recently cached
+  if (!existingFileCheck) {
     try {
       const res = (
         await fetchClient.GET("/files", {
@@ -101,7 +98,14 @@ const uploadFile = async (
       ).data;
 
       const exists = Boolean(res && res.items.length > 0);
-      fileExistenceCache.set(cacheKey, { exists, timestamp: Date.now() });
+      
+      // Cache the result for 5 minutes
+      fileExistenceCache.set(path, fileName, {
+        fileName,
+        exists,
+        fileId: res?.items?.[0]?.id,
+        size: res?.items?.[0]?.size
+      });
       
       if (exists) {
         throw new Error("File already exists");
@@ -374,6 +378,7 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
   const [session] = useSession();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { path } = useSearch({ from: "/_authed/$view" });
 
   const openFileSelector = useCallback(() => {
     if (fileInputRef?.current) {
@@ -395,23 +400,63 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
     }
   }, [fileDialogOpen]);
 
-  const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
       ? Array.from(event.target.files).filter((f) => f.size > 0)
       : [];
-    if (files.length > 0) {
+      
+    if (files.length === 0) return;
+
+    // Show immediate feedback for large batches
+    if (files.length > 50) {
+      toast.loading(`Checking ${files.length} files for duplicates...`, { id: 'batch-check' });
+    }
+
+    try {
+      // Use optimized batch checking for better performance
+      const { toUpload, alreadyExists, checkDuration } = await optimizedBatchFileCheck(
+        files, 
+        path || "/"
+      );
+
+      // Dismiss loading toast
+      toast.dismiss('batch-check');
+
+      // Show results to user
+      if (alreadyExists.length > 0) {
+        toast.success(
+          `Found ${toUpload.length} new files to upload. ${alreadyExists.length} files already exist.`,
+          { duration: 4000 }
+        );
+      } else if (toUpload.length > 0) {
+        toast.success(`Ready to upload ${toUpload.length} files`);
+      }
+
+      // Log performance metrics
+      console.log(`Batch file check completed in ${checkDuration}ms for ${files.length} files`);
+
+      // Only add files that don't exist
+      if (toUpload.length > 0) {
+        actions.addFiles(toUpload);
+      }
+      
+      // Optionally show existing files dialog for user decision
+      if (alreadyExists.length > 0) {
+        // Could implement a dialog here to let user choose to overwrite
+        console.log('Files already exist:', alreadyExists.map(item => item.file.name));
+      }
+
+    } catch (error) {
+      toast.dismiss('batch-check');
+      console.error('Batch file check failed:', error);
+      
+      // Fallback: add all files and let individual checks handle duplicates
+      toast.error('Could not check for duplicates, will check during upload');
       actions.addFiles(files);
     }
-  }, [actions]);
+  }, [actions, path]);
 
   const queryClient = useQueryClient();
-
-  const creatFile = $api.useMutation("post", "/files", {
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey });
-    },
-  });
-  const { path } = useSearch({ from: "/_authed/$view" });
 
   // Debounced query invalidation to prevent excessive refreshes
   const debouncedInvalidateQueries = useRef<NodeJS.Timeout>();
