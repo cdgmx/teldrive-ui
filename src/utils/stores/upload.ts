@@ -1,5 +1,9 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
+import { enableMapSet } from "immer";
+
+// Enable MapSet support for Immer
+enableMapSet();
 
 export enum FileUploadStatus {
   NOT_STARTED = 0,
@@ -21,7 +25,8 @@ export interface UploadFile {
 export interface UploadState {
   filesIds: string[];
   fileMap: Record<string, UploadFile>;
-  currentFileId: string;
+  currentFileId: string; // Keep for backward compatibility
+  activeUploads: Set<string>; // Track currently uploading files
   collapse: boolean;
   fileDialogOpen: boolean;
   uploadOpen: boolean;
@@ -35,7 +40,8 @@ export interface UploadState {
     setFileDialogOpen: (open: boolean) => void;
     setUploadOpen: (open: boolean) => void;
     setProgress: (id: string, progress: number) => void;
-    startNextUpload: () => void;
+    addActiveUpload: (id: string) => void;
+    removeActiveUpload: (id: string) => void;
   };
 }
 
@@ -44,6 +50,7 @@ export const useFileUploadStore = create<UploadState>()(
     filesIds: [],
     fileMap: {},
     currentFileId: "",
+    activeUploads: new Set<string>(),
     collapse: false,
     fileDialogOpen: false,
     uploadOpen: false,
@@ -71,11 +78,6 @@ export const useFileUploadStore = create<UploadState>()(
           // Set current file ID if none is set
           if (!state.currentFileId && ids.length > 0) {
             state.currentFileId = ids[0];
-          } else if (state.currentFileId && state.fileMap[state.currentFileId]) {
-            const currentFile = state.fileMap[state.currentFileId];
-            if (currentFile.status === FileUploadStatus.UPLOADED && ids.length > 0) {
-              state.currentFileId = ids[0];
-            }
           }
         }),
 
@@ -107,23 +109,30 @@ export const useFileUploadStore = create<UploadState>()(
           }
           delete state.fileMap[id];
           state.filesIds = state.filesIds.filter((fileId) => fileId !== id);
+          state.activeUploads.delete(id);
+          
           if (state.filesIds.length === 0) {
             state.currentFileId = "";
             state.collapse = false;
             state.uploadOpen = false;
             state.fileMap = {};
+            state.activeUploads.clear();
           }
         }),
 
       cancelUpload: () =>
         set((state) => {
-          const file = state.fileMap[state.currentFileId];
-          if (file?.controller) {
-            file.controller.abort();
-          }
+          // Cancel all active uploads
+          Object.values(state.fileMap).forEach(file => {
+            if (file?.controller) {
+              file.controller.abort();
+            }
+          });
+          // Clear all state
           state.fileMap = {};
           state.filesIds = [];
           state.currentFileId = "";
+          state.activeUploads.clear();
           state.collapse = false;
           state.uploadOpen = false;
         }),
@@ -139,13 +148,15 @@ export const useFileUploadStore = create<UploadState>()(
         set((state) => {
           state.uploadOpen = open;
         }),
-      startNextUpload: () =>
+
+      addActiveUpload: (id: string) =>
         set((state) => {
-          const nextFileId = state.filesIds.findIndex((id) => id === state.currentFileId);
-          if (nextFileId === -1 || nextFileId === state.filesIds.length - 1) {
-            return;
-          }
-          state.currentFileId = state.filesIds[nextFileId + 1];
+          state.activeUploads.add(id);
+        }),
+
+      removeActiveUpload: (id: string) =>
+        set((state) => {
+          state.activeUploads.delete(id);
         }),
     },
   })),

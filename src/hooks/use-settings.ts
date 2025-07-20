@@ -5,7 +5,8 @@ import { splitFileSizes } from "@/utils/common";
 const defaultSettings = {
   pageSize: "500",
   splitFileSize: splitFileSizes[1].value.toString(),
-  uploadConcurrency: "4",
+  uploadConcurrency: "4", // Concurrent parts within a single file
+  maxConcurrentFiles: "3", // Maximum concurrent file uploads
   encryptFiles: false,
   resizerHost: "",
   rcloneProxy: "",

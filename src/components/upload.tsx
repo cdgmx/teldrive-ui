@@ -26,6 +26,9 @@ import { FileUploadStatus, useFileUploadStore } from "@/utils/stores";
 import type { components } from "@/lib/api";
 import { useSearch } from "@tanstack/react-router";
 
+// Cache for file existence checks to prevent race conditions
+const fileExistenceCache = new Map<string, { exists: boolean; timestamp: number }>();
+
 type UploadParams = Record<string, string | number | boolean | undefined>;
 
 const uploadChunk = <T extends {}>(
@@ -82,15 +85,36 @@ const uploadFile = async (
 ) => {
   const fileName = file.name;
 
-  const res = (
-    await fetchClient.GET("/files", {
-      params: {
-        query: { path, name: fileName, operation: "find" },
-      },
-    })
-  ).data;
+  // Cache for file existence to avoid race conditions
+  const cacheKey = `${path}/${fileName}`;
+  const existingFileCheck = fileExistenceCache.get(cacheKey);
+  
+  // Only check if not recently checked
+  if (!existingFileCheck || Date.now() - existingFileCheck.timestamp > 30000) { // 30 second cache
+    try {
+      const res = (
+        await fetchClient.GET("/files", {
+          params: {
+            query: { path, name: fileName, operation: "find" },
+          },
+        })
+      ).data;
 
-  if (res && res.items.length > 0) {
+      const exists = Boolean(res && res.items.length > 0);
+      fileExistenceCache.set(cacheKey, { exists, timestamp: Date.now() });
+      
+      if (exists) {
+        throw new Error("File already exists");
+      }
+    } catch (error) {
+      // If it's our "file exists" error, re-throw it
+      if (error instanceof Error && error.message === "File already exists") {
+        throw error;
+      }
+      // For other errors (network issues, etc.), log but continue with upload
+      console.warn(`File existence check failed for ${fileName}, continuing with upload:`, error);
+    }
+  } else if (existingFileCheck.exists) {
     throw new Error("File already exists");
   }
 
@@ -317,7 +341,7 @@ const UploadFileEntry = memo(({ id }: { id: string }) => {
 });
 
 export const Upload = ({ queryKey }: { queryKey: any[] }) => {
-  const { fileIds, currentFileId, collapse, fileDialogOpen, uploadOpen, actions } = useFileUploadStore(
+  const { fileIds, currentFileId, collapse, fileDialogOpen, uploadOpen, activeUploads, actions } = useFileUploadStore(
     useShallow((state) => ({
       fileIds: state.filesIds,
       currentFileId: state.currentFileId,
@@ -325,6 +349,7 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
       actions: state.actions,
       fileDialogOpen: state.fileDialogOpen,
       uploadOpen: state.uploadOpen,
+      activeUploads: state.activeUploads,
     })),
   );
 
@@ -388,35 +413,87 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
   });
   const { path } = useSearch({ from: "/_authed/$view" });
 
-  useEffect(() => {
-    if (currentFile?.id && currentFile?.status === FileUploadStatus.NOT_STARTED) {
-      actions.setFileUploadStatus(currentFile.id, FileUploadStatus.UPLOADING);
-      uploadFile(
-        currentFile.file,
-        path || "/",
-        Number(settings.splitFileSize),
-        session?.userId as number,
-        Number(settings.uploadConcurrency),
-        Boolean(settings.encryptFiles),
-        currentFile.controller.signal,
-        (progress) => actions.setProgress(currentFile.id, progress),
-        async (payload) => {
-          await creatFile.mutateAsync({
-            body: payload,
-          });
-        },
-      )
-        .then(() => {
-          actions.setFileUploadStatus(currentFile.id, FileUploadStatus.UPLOADED);
-          actions.startNextUpload();
-        })
-        .catch((err) => {
-          toast.error(err.message);
-          actions.setFileUploadStatus(currentFile.id, FileUploadStatus.FAILED);
-          actions.startNextUpload();
-        });
+  // Debounced query invalidation to prevent excessive refreshes
+  const debouncedInvalidateQueries = useRef<NodeJS.Timeout>();
+  
+  const invalidateQueriesDebounced = useCallback(() => {
+    if (debouncedInvalidateQueries.current) {
+      clearTimeout(debouncedInvalidateQueries.current);
     }
-  }, [currentFile?.id, currentFile?.status, path, settings.splitFileSize, settings.uploadConcurrency, settings.encryptFiles, session?.userId, actions, creatFile]);
+    debouncedInvalidateQueries.current = setTimeout(() => {
+      queryClient.invalidateQueries({ queryKey });
+    }, 1000); // Wait 1 second before invalidating to batch multiple completions
+  }, [queryClient, queryKey]);
+
+  // Modified create file mutation without immediate invalidation
+  const creatFileWithoutInvalidation = $api.useMutation("post", "/files");
+
+  // Handle concurrent uploads with improved state management
+  useEffect(() => {
+    const maxConcurrent = Number(settings.maxConcurrentFiles) || 3;
+    
+    // Find files ready to upload
+    const readyFiles = fileIds.filter(id => {
+      const file = useFileUploadStore.getState().fileMap[id];
+      return file && file.status === FileUploadStatus.NOT_STARTED;
+    });
+
+    // Calculate available slots
+    const availableSlots = maxConcurrent - activeUploads.size;
+    
+    if (readyFiles.length > 0 && availableSlots > 0) {
+      // Start uploads for available slots
+      const filesToStart = readyFiles.slice(0, availableSlots);
+      
+      filesToStart.forEach(async (fileId) => {
+        const file = useFileUploadStore.getState().fileMap[fileId];
+        if (!file) return;
+
+        // Mark as uploading and add to active uploads
+        actions.setFileUploadStatus(fileId, FileUploadStatus.UPLOADING);
+        actions.addActiveUpload(fileId);
+
+        try {
+          await uploadFile(
+            file.file,
+            path || "/",
+            Number(settings.splitFileSize),
+            session?.userId as number,
+            Number(settings.uploadConcurrency),
+            Boolean(settings.encryptFiles),
+            file.controller.signal,
+            (progress) => actions.setProgress(fileId, progress),
+            async (payload) => {
+              // Use the non-invalidating mutation
+              await creatFileWithoutInvalidation.mutateAsync({
+                body: payload,
+              });
+            },
+          );
+          
+          actions.setFileUploadStatus(fileId, FileUploadStatus.UPLOADED);
+          actions.removeActiveUpload(fileId);
+          
+          // Trigger debounced query invalidation
+          invalidateQueriesDebounced();
+          
+        } catch (err: any) {
+          toast.error(`Upload failed for ${file.file.name}: ${err.message}`);
+          actions.setFileUploadStatus(fileId, FileUploadStatus.FAILED);
+          actions.removeActiveUpload(fileId);
+        }
+      });
+    }
+  }, [fileIds, activeUploads.size, path, settings.splitFileSize, settings.uploadConcurrency, settings.encryptFiles, settings.maxConcurrentFiles, session?.userId, actions, creatFileWithoutInvalidation, invalidateQueriesDebounced]);
+
+  // Cleanup debounced timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debouncedInvalidateQueries.current) {
+        clearTimeout(debouncedInvalidateQueries.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="fixed right-10 bottom-10">
@@ -440,6 +517,11 @@ export const Upload = ({ queryKey }: { queryKey: any[] }) => {
               <span>Upload</span>
               <span className="text-label-medium ml-2">
                 {fileIds.length} {fileIds.length > 1 ? "files" : "file"}
+                {activeUploads.size > 0 && (
+                  <span className="text-primary ml-1">
+                    ({activeUploads.size} active)
+                  </span>
+                )}
               </span>
               <div className="inline-flex gap-2 ml-auto">
                 <Button

@@ -51,6 +51,29 @@ export const GeneralTab = memo(() => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
         <div>
+          <p className="text-lg font-medium">Max Concurrent Files</p>
+          <p className="text-sm font-normal text-on-surface-variant">Maximum files uploading simultaneously</p>
+        </div>
+        <Controller
+          name="maxConcurrentFiles"
+          control={control}
+          render={({ field, fieldState: { error } }) => (
+            <Input
+              size="lg"
+              variant="bordered"
+              isInvalid={!!error}
+              errorMessage={error?.message}
+              type="number"
+              min="1"
+              max="10"
+              {...field}
+            />
+          )}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+        <div>
           <p className="text-lg font-medium">Resizer Host</p>
           <p className="text-sm font-normal text-on-surface-variant">
             Image Resize Host to resize images

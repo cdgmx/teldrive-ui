@@ -12,6 +12,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### [2025-07-20 Current] [FEATURE] Implemented concurrent file uploads with configurable limits
+- **What**: Added support for uploading multiple files simultaneously with `maxConcurrentFiles` setting (default: 3)
+- **Why**: Sequential uploads were extremely slow for large file queues, causing poor user experience
+- **Impact**: Dramatically improved upload speed by processing multiple files concurrently while maintaining server stability
+
+### [2025-07-20 Current] [BUGFIX] Fixed concurrent upload race conditions and "file exists" errors
+- **What**: Implemented file existence cache and debounced query invalidation to prevent false positives
+- **Why**: Multiple concurrent uploads caused race conditions where completed uploads made subsequent files appear to "already exist"
+- **Impact**: Eliminated false "file exists" errors and UI "bouncing" effects during concurrent uploads
+
+### [2025-07-20 Current] [PERFORMANCE] Enhanced upload state management for concurrent processing
+- **What**: Restructured upload store with `activeUploads` Set tracking and improved state cleanup
+- **Why**: Previous single-file state management couldn't handle multiple concurrent uploads properly
+- **Impact**: Reliable concurrent upload tracking with proper cleanup when files are cancelled or completed
+
+### [2025-07-20 Current] [PERFORMANCE] Added debounced query invalidation for smoother UI updates
+- **What**: Implemented 1-second debounced query invalidation to batch multiple upload completions
+- **Why**: Each completed upload immediately invalidated queries, causing excessive UI refreshes and "bouncing"
+- **Impact**: Smoother upload experience with batched UI updates, eliminating jarring refresh cycles
+
 ### [2025-07-20 Current] [PERFORMANCE] Implemented upload component virtualization and optimization
 - **What**: Added `react-window` for virtual scrolling, optimized Zustand selectors, and implemented threshold-based progress updates
 - **Why**: Upload component exhibited significant performance degradation with large file volumes (1000+ files)
